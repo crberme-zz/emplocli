@@ -1,6 +1,7 @@
 from argparse import ArgumentParser
 from data import url, db, username, password
 from xmlrpc import client
+import logging
 
 # Initialize the argument parser
 parser = ArgumentParser(description="Register attendances on an Odoo instance.")
@@ -10,6 +11,9 @@ args_group.add_argument("--check-out", "-o", dest="check", action="store_const",
 parser.add_argument("--reason", "-r", help="Specify the attendance reason ID for check out.")
 parser.add_argument("--list-reasons", "-R", action="store_true", help="List the available reason ID with a brief description.")
 args = parser.parse_args()
+
+# Initialize the logger
+logging.basicConfig(filename=__file__[:__file__.index(".")] + ".log", level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 
 # Log in
 common = client.ServerProxy('{}/xmlrpc/2/common'.format(url))
@@ -33,7 +37,7 @@ if uid:
         for response_item in response:
             # Failsafe in case we get more than one result
             if employee_id is not None:
-                print("Unexpected result when quering for current attendance state.")
+                logging.error("Unexpected result when quering for current attendance state.")
                 employee_id = None
                 break
 
@@ -44,42 +48,42 @@ if uid:
             if args.check == 1:
                 # Check in
                 if attendance_state == "checked_in":
-                    print("User already checked in, skipping...")
+                    logging.info("User already checked in.")
                 elif attendance_state == "checked_out":
                     # Register the attendance
                     response = models.execute_kw(db, uid, password, 'hr.employee', 'attendance_manual', [employee_id, False])
                     action = response.get("action")
                     attendance = action.get("attendance")
-                    print("Checked in as user \"" + username + "\" on " + attendance.get("check_in") + ".")
+                    logging.info("Checked in.")
                 else:
-                    print("Unexpected attendance state: \"" + attendance_state + "\".")
+                    logging.error("Unexpected attendance state: \"%s\".", attendance_state)
             elif args.check == 2:
                 # Check out
                 if attendance_state == "checked_out":
-                    print("User not checked in, skipping...")
+                    logging.info("User already checked out.")
                 elif attendance_state == "checked_in":
                     # Register the attendance
                     response = models.execute_kw(db, uid, password, 'hr.employee', 'attendance_manual', [employee_id, False])
                     action = response.get("action")
                     attendance = action.get("attendance")
-                    print("Checked out as user \"" + username + "\" on " + attendance.get("check_out") + ".")
+                    logging.info("Checked out.")
 
                     if args.reason:
                         # Set a reason for the registered attendance
                         reason = int(args.reason)
                         response = models.execute_kw(db, uid, password, 'hr.attendance.reason', 'search_read', [[]], {"fields": ["id"]})
                         if not any(reasons.get("id") == reason for reasons in response):
-                            print("Unknown reason ID:" + args.reason)
+                            logging.error("Unknown reason ID \"%s\", please use the --list-reasons or -R flags to get a list of available reason IDs.", args.reason)
                         else:
                             # [6, False, [IDs]] deletes the current IDs and inserts the provided one(s) in a single operation
                             response = models.execute_kw(db, uid, password, 'hr.attendance', 'write', [[attendance.get("id")], {'attendance_reason_ids': [[6, False, [reason]]]}])
                             if response:
-                                print("Attendance reason set.")
+                                logging.info("Attendance reason set to %s.", args.reason)
                             else:
-                                print("Couldn't set attendance reason.")
+                                logging.error("Couldn't set attendance reason due to an unknown error.")
                 else:
-                    print("Unexpected attendance state: \"" + attendance_state + "\".")
+                    logging.error("Unexpected attendance state: \"%s\".", attendance_state)
         else:
-            print("None or multiple employee ID(s) found for user \"" + username + "\".")
+            logging.error("None or multiple employee ID(s) found for user \"%s\".", username)
 else:
-    print("Login failed.")
+    logging.error("Login failed.")

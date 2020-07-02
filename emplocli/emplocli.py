@@ -13,7 +13,7 @@ parser.add_argument("--list-reasons", "-R", action="store_true", help="List the 
 args = parser.parse_args()
 
 # Initialize the logger
-logging.basicConfig(filename=__file__[:__file__.index(".")] + ".log", level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
+logging.basicConfig(filename=__file__[:__file__.rfind(".")] + ".log", level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 
 # Log in
 common = client.ServerProxy('{}/xmlrpc/2/common'.format(url))

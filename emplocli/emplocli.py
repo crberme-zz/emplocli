@@ -1,8 +1,8 @@
 from argparse import ArgumentParser
-from data import url, db, username, password
 from xmlrpc import client
 from xmlrpc.client import ProtocolError
 import logging
+import json
 
 def read_arguments():
     parser = ArgumentParser(description="Register attendances on an Odoo instance.")
@@ -13,29 +13,65 @@ def read_arguments():
     parser.add_argument("--list-reasons", "-R", action="store_true", help="List the available reason ID with a brief description.")
     return parser.parse_args()
 
+def read_config_file():
+    try:
+        return json.load(open("config.json"))
+    except OSError:
+        try:
+            # Migrate legacy config file to json
+            from data import url, db, username, password
+            config = {
+                "url": url,
+                "db": db,
+                "username": username,
+                "password": password
+            }
+
+            with open("config.json", "w") as file:
+                file.write(json.dumps(config))
+            logging.info("Legacy config file migrated to json.")
+            return config
+        except ImportError:
+            with open("config.json", "w") as file:
+                file.write(json.dumps({
+                    "url": "",
+                    "db": "",
+                    "username": "",
+                    "password": ""
+                }))
+            logging.error("No config found. Please fill the created config.json file and try again.")
+            raise ValueError("Invalid config.")
+    
+
 class EmployeeClient:
-    def __init__(self):
-        self.common = client.ServerProxy('{}/xmlrpc/2/common'.format(url))
-        self.models = client.ServerProxy('{}/xmlrpc/2/object'.format(url))
+    def __init__(self, url, db, username, password):
+        self.url = url
+        self.db = db
+        self.username = username
+        self.password = password
+
+        self.common = client.ServerProxy('{}/xmlrpc/2/common'.format(self.url))
+        self.models = client.ServerProxy('{}/xmlrpc/2/object'.format(self.url))
+
         self.id = None
         self.attendance_state = None
 
     def login(self):
-        self.uid = self.common.authenticate(db, username, password, {})
+        self.uid = self.common.authenticate(self.db, self.username, self.password, {})
         if not self.uid:
             return False
         else:
             return True
 
     def get_reasons(self):
-        return self.models.execute_kw(db, self.uid, password, 'hr.attendance.reason', 'search_read', [[]], {"fields": ["name"]})
+        return self.models.execute_kw(self.db, self.uid, self.password, 'hr.attendance.reason', 'search_read', [[]], {"fields": ["name"]})
 
     def register_attendance(self):
-        return self.models.execute_kw(db, self.uid, password, 'hr.employee', 'attendance_manual', [self.id, False])
+        return self.models.execute_kw(self.db, self.uid, self.password, 'hr.employee', 'attendance_manual', [self.id, False])
 
     def register_attendance_reason(self, attendance_id, reason):
         # [6, False, [IDs]] deletes the current IDs and inserts the provided one(s) in a single operation
-        return self.models.execute_kw(db, self.uid, password, 'hr.attendance', 'write', [[attendance_id], {'attendance_reason_ids': [[6, False, [reason]]]}])
+        return self.models.execute_kw(self.db, self.uid, self.password, 'hr.attendance', 'write', [[attendance_id], {'attendance_reason_ids': [[6, False, [reason]]]}])
 
     def check_in(self):
         attendance_state = self.get_attendance_state()
@@ -73,7 +109,7 @@ class EmployeeClient:
 
 
     def get_attendance_state(self):
-        response = self.models.execute_kw(db, self.uid, password, 'hr.employee', 'search_read', [[['user_id', '=', self.uid]]], {'fields': ['attendance_state']})
+        response = self.models.execute_kw(self.db, self.uid, self.password, 'hr.employee', 'search_read', [[['user_id', '=', self.uid]]], {'fields': ['attendance_state']})
         for response_item in response:
             if self.id:
                 logging.warn("Overriding ID with value \"%i\", original value was \"%i\"", response_item.get("id"), self.id)
@@ -93,7 +129,8 @@ if __name__ == "__main__":
 
     # Initialize variables
     args = read_arguments()
-    client = EmployeeClient()
+    config = read_config_file()
+    client = EmployeeClient(config["url"], config["db"], config["username"], config["password"])
     
     # Perform action
     if client.login():

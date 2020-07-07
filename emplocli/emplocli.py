@@ -3,6 +3,8 @@ from xmlrpc import client
 from xmlrpc.client import ProtocolError
 import logging
 import json
+from os import path, getcwd
+from shutil import move
 
 def read_arguments():
     parser = ArgumentParser(description="Register attendances on an Odoo instance.")
@@ -15,24 +17,17 @@ def read_arguments():
 
 def read_config_file():
     try:
-        return json.load(open("config.json"))
+        return json.load(open(path.join(path.dirname(__file__), "config.json")))
     except OSError:
         try:
-            # Migrate legacy config file to json
-            from data import url, db, username, password
-            config = {
-                "url": url,
-                "db": db,
-                "username": username,
-                "password": password
-            }
+            # Move old config file to module path
+            config = json.load(open("config.json"))
 
-            with open("config.json", "w") as file:
-                file.write(json.dumps(config))
-            logging.info("Legacy config file migrated to json.")
+            move(path.join(getcwd(), "config.json"), path.join(path.dirname(__file__), "config.json"))
+            logging.info("Moved config file to module path.")
             return config
         except ImportError:
-            with open("config.json", "w") as file:
+            with open(path.join(path.dirname(__file__), "config.json"), "w") as file:
                 file.write(json.dumps({
                     "url": "",
                     "db": "",

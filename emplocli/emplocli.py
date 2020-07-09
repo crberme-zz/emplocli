@@ -5,6 +5,7 @@ import logging
 import json
 from os import path, getcwd
 from shutil import move
+from utils.ApiClient import ApiClient
 
 def read_arguments():
     parser = ArgumentParser(description="Register attendances on an Odoo instance.")
@@ -36,88 +37,6 @@ def read_config_file():
                 }))
             logging.error("No config found. Please fill the created config.json file and try again.")
             raise ValueError("Invalid config.")
-    
-
-class EmployeeClient:
-    def __init__(self, url, db, username, password):
-        self.url = url
-        self.db = db
-        self.username = username
-        self.password = password
-
-        self.common = client.ServerProxy('{}/xmlrpc/2/common'.format(self.url))
-        self.models = client.ServerProxy('{}/xmlrpc/2/object'.format(self.url))
-
-        self.id = None
-        self.attendance_state = None
-
-    def login(self):
-        self.uid = self.common.authenticate(self.db, self.username, self.password, {})
-        if not self.uid:
-            return False
-        else:
-            return True
-
-    def get_reasons(self):
-        return self.models.execute_kw(self.db, self.uid, self.password, 'hr.attendance.reason', 'search_read', [[]], {"fields": ["name"]})
-
-    def register_attendance(self):
-        return self.models.execute_kw(self.db, self.uid, self.password, 'hr.employee', 'attendance_manual', [self.id, False])
-
-    def register_attendance_reason(self, attendance_id, reason):
-        # [6, False, [IDs]] deletes the current IDs and inserts the provided one(s) in a single operation
-        return self.models.execute_kw(self.db, self.uid, self.password, 'hr.attendance', 'write', [[attendance_id], {'attendance_reason_ids': [[6, False, [reason]]]}])
-
-    def check_in(self):
-        attendance_state = self.get_attendance_state()
-        if attendance_state == "checked_in":
-            logging.info("User already checked in.")
-        else:
-            try:
-                action = self.register_attendance()
-                logging.info("Checked in.")
-            except ProtocolError as err:
-                logging.error(err.errmsg)
-
-    def check_out(self, reason=None):
-        attendance_state = self.get_attendance_state()
-        if attendance_state == "checked_out":
-            logging.info("User not checked in.")
-        else:
-            try:
-                response = self.register_attendance()
-                logging.info("Checked out.")
-            except ProtocolError as err:
-                logging.error(err.errmsg)
-                return
-
-            if reason:
-                if any(reasons.get("id") == reason for reasons in self.get_reasons()):
-                    try:
-                        self.register_attendance_reason(response.get("action").get("attendance").get("id"), reason)
-                        logging.info("Attendance reason set.")
-                    except ProtocolError as err:
-                        logging.error(err.errmsg)
-                        return
-                else:
-                    logging.error("Unknown reason ID \"%s\", please use the --list-reasons or -R flags to get a list of available reason IDs.", args.reason)
-
-
-    def get_attendance_state(self):
-        response = self.models.execute_kw(self.db, self.uid, self.password, 'hr.employee', 'search_read', [[['user_id', '=', self.uid]]], {'fields': ['attendance_state']})
-        for response_item in response:
-            if self.id:
-                logging.warn("Overriding ID with value \"%i\", original value was \"%i\"", response_item.get("id"), self.id)
-
-            self.id = response_item.get("id")
-            
-            if self.attendance_state:
-                logging.warn("Overriding attendance state with value \"%s\", original value was \"%s\"", response_item.get("attendance_state"), self.attendance_state)
-
-            attendance_state = response_item.get("attendance_state")
-
-        return attendance_state
-
 
 if __name__ == "__main__":
     logging.basicConfig(filename=__file__[:__file__.rfind(".")] + ".log", level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
@@ -125,25 +44,49 @@ if __name__ == "__main__":
     # Initialize variables
     args = read_arguments()
     config = read_config_file()
-    client = EmployeeClient(config["url"], config["db"], config["username"], config["password"])
+    url = config["url"]
+    db = config["db"]
+    username = config["username"]
+    password = config["password"]
+    api = ApiClient(url)
     
     # Perform action
-    if client.login():
+    uid = api.authenticate(db, username, password)
+    if not uid:
+        logging.error("Login failed.")
+    else:
         if args.list_reasons:
-            reasons = client.get_reasons()
-
+            reasons = api.search_read(db, uid, password, "hr.attendance.reason", "name")
+            
             print("Available reason IDs:")
             print("ID\tName")
             print(("=" * max(len(str(reason["id"])) for reason in reasons)) + "\t" + ("=" * max(len(reason["name"]) for reason in reasons)))
             for reason in reasons:
                 print(str(reason.get("id")) + "\t" + reason.get("name"))
         else:
+            response = api.search_read(db, uid, password, "hr.employee", "attendance_state", {"field_name": "user_id", "operator": "=", "value": uid})[0]
+            attendance_state = response.get("attendance_state")
+            employee_id = response.get("id")
+
             if args.check == 1:
-                client.check_in()
-            elif args.check == 2:
-                if args.reason:
-                    client.check_out(int(args.reason))
+                if attendance_state == "checked_in":
+                    logging.info("User already checked in.")
                 else:
-                    client.check_out()
-    else:
-        logging.error("Login failed.")
+                    response = api.attendance_manual(db, uid, password, employee_id)
+                    logging.info("Checked in.")
+            elif args.check == 2:
+                if attendance_state == "checked_out":
+                    logging.info("User not checked in.")
+                else:
+                    response = api.attendance_manual(db, uid, password, employee_id)
+                    logging.info("Checked out.")
+
+                    if args.reason:
+                        reason = int(args.reason)
+                        if any(reasons.get("id") == reason for reasons in api.search_read(db, uid, password, "hr.attendance.reason", "name")):
+                            attendance_id = response.get("action").get("attendance").get("id")
+                            # [6, False, [IDs]] deletes the current IDs and inserts the provided one(s) in a single operation
+                            response = api.write(db, uid, password, 'hr.attendance', attendance_id, 'attendance_reason_ids', [[6, False, [reason]]])
+                            logging.info("Attendance reason set.")
+                        else:
+                            logging.error("Unknown reason ID \"%s\", please use the --list-reasons or -R flags to get a list of available reason IDs.", args.reason)
